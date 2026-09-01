@@ -1,0 +1,11 @@
+{
+  "_comment": "This is your allow-list. The bot can ONLY message the people/groups listed here — see README.md. Replace the example entries below with real ones, then delete this _comment line (JSON doesn't support real comments).",
+
+  "friends": {
+    "example_friend": "94771234567@s.whatsapp.net"
+  },
+
+  "groups": {
+    "example_group": "PASTE_GROUP_ID_HERE@g.us"
+  }
+}
