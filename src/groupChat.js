@@ -6,7 +6,6 @@
 //   - other members can use a safe subset: /sticker /yt /search /img /song /ai
 //   - the bot occasionally joins in — always when @mentioned or replied to,
 //     otherwise a small random chance — using AI-generated replies
-//   - if a message sits unanswered (by anyone) for 30 minutes, the bot nudges in
 //
 // /delete stickers <N> removes the last N sticker messages from the group
 // (from anyone) using WhatsApp's admin delete-for-everyone — the bot's own
@@ -20,8 +19,6 @@ const { handleCommand } = require('./commands')
 const { getStickerPackInfo } = require('./media')
 const { ownerJids } = require('./config')
 
-const IDLE_CHECK_MS = 5 * 60 * 1000 // how often to scan for unanswered messages
-const IDLE_THRESHOLD_MS = 30 * 60 * 1000 // how long a message can sit unanswered
 const RANDOM_REPLY_CHANCE = 1 / 15
 const MAX_TRACKED_STICKERS = 200
 const STICKER_LOG_PATH = path.join(__dirname, '..', 'stickerLog.json')
@@ -32,9 +29,6 @@ const STICKER_LOG_PATH = path.join(__dirname, '..', 'stickerLog.json')
 const BLOCKED_STICKER_PACK_KEYWORDS = ['whatsapp sticker maker']
 
 const SAFE_COMMAND_PREFIXES = ['/sticker ', '/song ', '/yt ', '/search ', '/img ', '/ai ']
-
-// groupId -> { text, time, answered }
-const groupActivity = new Map()
 
 // groupId -> array of message keys for recent sticker messages, oldest first.
 // Persisted to disk so /delete still finds stickers sent before the bot's last restart.
@@ -51,15 +45,6 @@ function saveStickerLog() {
 }
 
 const stickerLog = loadStickerLog()
-
-function noteGroupActivity(groupId, text) {
-  groupActivity.set(groupId, { text, time: Date.now(), answered: false })
-}
-
-function markAnswered(groupId) {
-  const entry = groupActivity.get(groupId)
-  if (entry) entry.answered = true
-}
 
 function trackSticker(groupId, key) {
   const log = stickerLog.get(groupId) || []
@@ -110,7 +95,6 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
     if (!removed) trackSticker(chatId, msg.key)
   }
 
-  if (text) noteGroupActivity(chatId, text)
   if (!text) return
 
   const senderJid = msg.key.participant || msg.key.remoteJid
@@ -133,7 +117,6 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
 
   if (SAFE_COMMAND_PREFIXES.some((prefix) => text.startsWith(prefix))) {
     await handleCommand(sock, chatId, text)
-    markAnswered(chatId)
     return
   }
 
@@ -145,35 +128,13 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
     const question = text.replace(/@\d+/g, '').trim() || text
     const answer = await askAI(question)
     await safeSend(sock, chatId, { text: answer })
-    markAnswered(chatId)
     return
   }
 
   if (Math.random() < RANDOM_REPLY_CHANCE) {
     const answer = await askAI(text)
     await safeSend(sock, chatId, { text: answer })
-    markAnswered(chatId)
   }
 }
 
-function startGroupIdleChecker(sock) {
-  setInterval(async () => {
-    const now = Date.now()
-    for (const [groupId, entry] of groupActivity) {
-      if (entry.answered || now - entry.time < IDLE_THRESHOLD_MS) continue
-      try {
-        const prompt = `Nobody in this WhatsApp group has replied to this message in 30 minutes: "${entry.text}". ` +
-          `If you can genuinely help or answer it, do so briefly. If you can't really answer it, just send a short, ` +
-          `friendly note saying no one's replied yet and they might be busy. Keep it simple and add an emoji.`
-        const answer = await askAI(prompt)
-        await safeSend(sock, groupId, { text: answer })
-      } catch (err) {
-        console.error('Group idle nudge failed:', err.message)
-      } finally {
-        markAnswered(groupId)
-      }
-    }
-  }, IDLE_CHECK_MS)
-}
-
-module.exports = { handleGroupMessage, startGroupIdleChecker }
+module.exports = { handleGroupMessage }

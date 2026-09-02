@@ -7,7 +7,7 @@ const {
 const qrcode = require('qrcode-terminal')
 const pino = require('pino')
 const { handleCommand } = require('./commands')
-const { handleGroupMessage, startGroupIdleChecker } = require('./groupChat')
+const { handleGroupMessage } = require('./groupChat')
 const { startCronJobs, startOneOffChecker } = require('./scheduler')
 const { timezone } = require('./config')
 
@@ -45,7 +45,6 @@ async function startBot() {
       console.log('✅ Connected to WhatsApp as', sock.user?.id)
       startCronJobs(sock, timezone)
       startOneOffChecker(sock)
-      startGroupIdleChecker(sock)
     }
   })
 
