@@ -34,4 +34,48 @@ async function realImageSearch(query) {
   }
 }
 
-module.exports = { youtubeSearchLink, googleSearchLink, googleImagesLink, realImageSearch }
+// Returns { link, title, thumbnail, channel } for the top YouTube result, or
+// null if no SERPAPI_KEY is configured or the call fails.
+async function youtubeTopVideo(query) {
+  if (!serpApiKey) return null
+  try {
+    const res = await axios.get('https://serpapi.com/search.json', {
+      params: { engine: 'youtube', search_query: query, api_key: serpApiKey },
+    })
+    const top = res.data?.video_results?.[0]
+    if (!top?.link) return null
+    return { link: top.link, title: top.title, thumbnail: top.thumbnail?.static, channel: top.channel?.name }
+  } catch (err) {
+    console.error('SerpApi YouTube search failed:', err.message)
+    return null
+  }
+}
+
+// Returns up to `limit` { title, snippet, link } organic results, or null if
+// no SERPAPI_KEY is configured or the call fails.
+async function googleSearchResults(query, limit = 3) {
+  if (!serpApiKey) return null
+  try {
+    const res = await axios.get('https://serpapi.com/search.json', {
+      params: { engine: 'google', q: query, api_key: serpApiKey },
+    })
+    const results = res.data?.organic_results?.slice(0, limit).map((r) => ({
+      title: r.title,
+      snippet: r.snippet,
+      link: r.link,
+    }))
+    return results?.length ? results : null
+  } catch (err) {
+    console.error('SerpApi Google search failed:', err.message)
+    return null
+  }
+}
+
+module.exports = {
+  youtubeSearchLink,
+  googleSearchLink,
+  googleImagesLink,
+  realImageSearch,
+  youtubeTopVideo,
+  googleSearchResults,
+}

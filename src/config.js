@@ -5,5 +5,8 @@ module.exports = {
   geminiApiKey: process.env.GEMINI_API_KEY || null,
   // PLACEHOLDER — optional, paid beyond a trial credit, see .env.example.
   serpApiKey: process.env.SERPAPI_KEY || null,
+  // PLACEHOLDER — optional, free, see .env.example for where to get these.
+  spotifyClientId: process.env.SPOTIFY_CLIENT_ID || null,
+  spotifyClientSecret: process.env.SPOTIFY_CLIENT_SECRET || null,
   timezone: process.env.TZ || 'Asia/Colombo',
 }

@@ -5,8 +5,16 @@
 
 const { resolveTarget, listTargets } = require('./targets')
 const { sendImageFromUrl, sendStickerFromUrl } = require('./media')
-const { youtubeSearchLink, googleSearchLink, googleImagesLink, realImageSearch } = require('./search')
+const {
+  youtubeSearchLink,
+  googleSearchLink,
+  googleImagesLink,
+  realImageSearch,
+  youtubeTopVideo,
+  googleSearchResults,
+} = require('./search')
 const { askAI } = require('./ai')
+const { searchTrack } = require('./spotify')
 const { addOneOff } = require('./scheduler')
 const { safeSend } = require('./safeSend')
 
@@ -17,12 +25,14 @@ const HELP_TEXT = `*Your WhatsApp bot — commands*
 /groups — list every group you're in, with IDs (use this to fill targets.json)
 /send <name> <message> — send text to an allow-listed friend/group
 /image <name> <url> [caption] — send an image from a URL
-/sticker <name> <url> — convert an image URL to a sticker and send it
+/sticker <description> — find an image for it and send it as a sticker here
+/sticker <name> <url> — or convert an image URL you have into a sticker for someone on your allow-list
 /schedule <name> <YYYY-MM-DDTHH:MM> <message> — send a message once, later
 
 *Search & links (replies here, in this chat)*
-/yt <query> — YouTube search link
-/search <query> — Google search link
+/song <query> — Spotify track link, with preview (needs SPOTIFY_CLIENT_ID/SECRET)
+/yt <query> — top YouTube video, with preview (needs SERPAPI_KEY, otherwise a search link)
+/search <query> — top Google results with snippets & links (needs SERPAPI_KEY, otherwise a search link)
 /img <query> — an image (real result if SERPAPI_KEY is set, otherwise a search link)
 
 *AI*
@@ -84,13 +94,27 @@ async function handleCommand(sock, chatId, rawText) {
   }
 
   if (text.startsWith('/sticker ')) {
-    const [, name, url] = splitCommand(text, 3)
-    const jid = resolveTarget(name)
-    if (!jid) return safeSend(sock, chatId, { text: `"${name}" isn't on your allow-list.` })
-    if (!url) return safeSend(sock, chatId, { text: 'Usage: /sticker <name> <image-url>' })
+    const rest = text.slice(9)
+    const [maybeName, maybeUrl] = splitCommand(rest, 2)
+    const jid = resolveTarget(maybeName)
+
+    // "/sticker <allow-listed name> <image-url>" — send a sticker you already have a link for, to someone else.
+    if (jid && /^https?:\/\//i.test(maybeUrl || '')) {
+      try {
+        await sendStickerFromUrl(sock, jid, maybeUrl)
+        return safeSend(sock, chatId, { text: `✅ Sticker sent to ${maybeName}.` })
+      } catch (err) {
+        return safeSend(sock, chatId, { text: `⚠️ Couldn't make that sticker: ${err.message}` })
+      }
+    }
+
+    // "/sticker <description>" — find an image for it and send the sticker right here.
+    const imageUrl = await realImageSearch(rest)
+    if (!imageUrl) {
+      return safeSend(sock, chatId, { text: `😕 Couldn't find an image for "${rest}" — try a different description.` })
+    }
     try {
-      await sendStickerFromUrl(sock, jid, url)
-      return safeSend(sock, chatId, { text: `✅ Sticker sent to ${name}.` })
+      return sendStickerFromUrl(sock, chatId, imageUrl)
     } catch (err) {
       return safeSend(sock, chatId, { text: `⚠️ Couldn't make that sticker: ${err.message}` })
     }
@@ -107,12 +131,35 @@ async function handleCommand(sock, chatId, rawText) {
     return safeSend(sock, chatId, { text: `⏰ Scheduled for ${when.toLocaleString()}.` })
   }
 
+  if (text.startsWith('/song ')) {
+    const query = text.slice(6)
+    const track = await searchTrack(query)
+    if (track) {
+      return safeSend(sock, chatId, { text: `🎵 *${track.name}* — ${track.artists}\n${track.link}` })
+    }
+    return safeSend(sock, chatId, { text: '🎵 Spotify search isn\'t set up yet — add SPOTIFY_CLIENT_ID/SECRET to .env (see README.md).' })
+  }
+
   if (text.startsWith('/yt ')) {
-    return safeSend(sock, chatId, { text: youtubeSearchLink(text.slice(4)) })
+    const query = text.slice(4)
+    const top = await youtubeTopVideo(query)
+    if (top) {
+      const who = top.channel ? ` — ${top.channel}` : ''
+      return safeSend(sock, chatId, { text: `🎬 *${top.title}*${who}\n${top.link}` })
+    }
+    return safeSend(sock, chatId, { text: `🔎 ${youtubeSearchLink(query)}` })
   }
 
   if (text.startsWith('/search ')) {
-    return safeSend(sock, chatId, { text: googleSearchLink(text.slice(8)) })
+    const query = text.slice(8)
+    const results = await googleSearchResults(query)
+    if (results) {
+      const body = results
+        .map((r, i) => `${i + 1}️⃣ *${r.title}*\n${r.snippet ? r.snippet + '\n' : ''}🔗 ${r.link}`)
+        .join('\n\n')
+      return safeSend(sock, chatId, { text: `🔎 Top results for "${query}":\n\n${body}` })
+    }
+    return safeSend(sock, chatId, { text: `🔎 ${googleSearchLink(query)}` })
   }
 
   if (text.startsWith('/img ')) {
@@ -120,12 +167,12 @@ async function handleCommand(sock, chatId, rawText) {
     const realUrl = await realImageSearch(query) // null if SERPAPI_KEY isn't set — see .env.example
     if (realUrl) {
       try {
-        return sendImageFromUrl(sock, chatId, realUrl, query)
+        return sendImageFromUrl(sock, chatId, realUrl, `📷 ${query}`)
       } catch {
         // fall through to the plain link below
       }
     }
-    return safeSend(sock, chatId, { text: googleImagesLink(query) })
+    return safeSend(sock, chatId, { text: `🔎 ${googleImagesLink(query)}` })
   }
 
   if (text.startsWith('/ai ')) {

@@ -7,6 +7,7 @@ const {
 const qrcode = require('qrcode-terminal')
 const pino = require('pino')
 const { handleCommand } = require('./commands')
+const { handleGroupMessage, startGroupIdleChecker } = require('./groupChat')
 const { startCronJobs, startOneOffChecker } = require('./scheduler')
 const { timezone } = require('./config')
 
@@ -44,6 +45,7 @@ async function startBot() {
       console.log('✅ Connected to WhatsApp as', sock.user?.id)
       startCronJobs(sock, timezone)
       startOneOffChecker(sock)
+      startGroupIdleChecker(sock)
     }
   })
 
@@ -52,21 +54,28 @@ async function startBot() {
     const msg = messages[0]
     if (!msg?.message || msg.key.remoteJid === 'status@broadcast') return
 
-    // Only messages you send to your own "Message Yourself" chat drive the bot.
-    // Everything else is left alone — see WHATSAPP_BOT_GUIDE.md §3.
+    // "Message Yourself" is the full-access control chat — see WHATSAPP_BOT_GUIDE.md §3.
+    // Any group the bot is in gets a lighter-touch experience — see groupChat.js.
     const myNumberJid = sock.user?.id?.split(':')[0] + '@s.whatsapp.net'
+    const myLidJid = sock.user?.lid?.split(':')[0] + '@lid'
+    const botJids = { myNumberJid, myLidJid }
     const chatId = msg.key.remoteJid
-    const isSelfChat = chatId === myNumberJid && msg.key.fromMe
-    if (!isSelfChat) return
+    const isSelfChat = (chatId === myNumberJid || chatId === myLidJid) && msg.key.fromMe
+    const isGroupChat = chatId.endsWith('@g.us')
+    if (!isSelfChat && !isGroupChat) return
 
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
-    if (!text) return
 
     try {
-      await handleCommand(sock, chatId, text)
+      if (isSelfChat) {
+        if (!text) return
+        await handleCommand(sock, chatId, text)
+      } else {
+        await handleGroupMessage(sock, chatId, msg, text, botJids)
+      }
     } catch (err) {
-      console.error('Command error:', err)
-      await sock.sendMessage(chatId, { text: `⚠️ Something went wrong: ${err.message}` })
+      console.error('Message handling error:', err)
+      if (isSelfChat) await sock.sendMessage(chatId, { text: `⚠️ Something went wrong: ${err.message}` })
     }
   })
 
