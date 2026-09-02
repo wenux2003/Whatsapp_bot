@@ -19,19 +19,26 @@ function googleImagesLink(query) {
   return `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(query)}`
 }
 
-// Returns a direct image URL for the top image result, or null if no
+// Returns up to `limit` direct image URLs (best match first), or [] if no
 // SERPAPI_KEY is configured (PLACEHOLDER — see .env.example) or the call fails.
-async function realImageSearch(query) {
-  if (!serpApiKey) return null
+// Multiple candidates let callers fall back if one host blocks the download.
+async function imageSearchCandidates(query, limit = 5) {
+  if (!serpApiKey) return []
   try {
     const res = await axios.get('https://serpapi.com/search.json', {
       params: { engine: 'google_images', q: query, api_key: serpApiKey },
     })
-    return res.data?.images_results?.[0]?.original || null
+    return (res.data?.images_results || []).slice(0, limit).map((r) => r.original).filter(Boolean)
   } catch (err) {
     console.error('SerpApi image search failed:', err.message)
-    return null
+    return []
   }
+}
+
+// Returns a direct image URL for the top image result, or null — see above.
+async function realImageSearch(query) {
+  const [first] = await imageSearchCandidates(query, 1)
+  return first || null
 }
 
 // Returns { link, title, thumbnail, channel } for the top YouTube result, or
@@ -76,6 +83,7 @@ module.exports = {
   googleSearchLink,
   googleImagesLink,
   realImageSearch,
+  imageSearchCandidates,
   youtubeTopVideo,
   googleSearchResults,
 }

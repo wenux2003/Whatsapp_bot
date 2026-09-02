@@ -4,12 +4,12 @@
 // allow-list in targets.json.
 
 const { resolveTarget, listTargets } = require('./targets')
-const { sendImageFromUrl, sendStickerFromUrl } = require('./media')
+const { sendImageFromUrl, sendStickerFromUrl, sendImageFromCandidates, sendStickerFromCandidates } = require('./media')
 const {
   youtubeSearchLink,
   googleSearchLink,
   googleImagesLink,
-  realImageSearch,
+  imageSearchCandidates,
   youtubeTopVideo,
   googleSearchResults,
 } = require('./search')
@@ -109,15 +109,16 @@ async function handleCommand(sock, chatId, rawText) {
     }
 
     // "/sticker <description>" — find an image for it and send the sticker right here.
-    const imageUrl = await realImageSearch(rest)
-    if (!imageUrl) {
+    // Tries a few candidates since some hosts block hotlinked/bot downloads.
+    const candidates = await imageSearchCandidates(rest)
+    if (!candidates.length) {
       return safeSend(sock, chatId, { text: `😕 Couldn't find an image for "${rest}" — try a different description.` })
     }
-    try {
-      return sendStickerFromUrl(sock, chatId, imageUrl)
-    } catch (err) {
-      return safeSend(sock, chatId, { text: `⚠️ Couldn't make that sticker: ${err.message}` })
+    const sent = await sendStickerFromCandidates(sock, chatId, candidates)
+    if (!sent) {
+      return safeSend(sock, chatId, { text: `⚠️ Found images for "${rest}" but couldn't download any of them — try a different description.` })
     }
+    return
   }
 
   if (text.startsWith('/schedule ')) {
@@ -164,13 +165,10 @@ async function handleCommand(sock, chatId, rawText) {
 
   if (text.startsWith('/img ')) {
     const query = text.slice(5)
-    const realUrl = await realImageSearch(query) // null if SERPAPI_KEY isn't set — see .env.example
-    if (realUrl) {
-      try {
-        return sendImageFromUrl(sock, chatId, realUrl, `📷 ${query}`)
-      } catch {
-        // fall through to the plain link below
-      }
+    const candidates = await imageSearchCandidates(query) // [] if SERPAPI_KEY isn't set — see .env.example
+    if (candidates.length) {
+      const sent = await sendImageFromCandidates(sock, chatId, candidates, `📷 ${query}`)
+      if (sent) return
     }
     return safeSend(sock, chatId, { text: `🔎 ${googleImagesLink(query)}` })
   }
