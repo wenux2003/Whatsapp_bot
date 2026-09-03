@@ -14,7 +14,7 @@
 const fs = require('fs')
 const path = require('path')
 const { askAI } = require('./ai')
-const { safeSend } = require('./safeSend')
+const { safeSend, withTyping } = require('./safeSend')
 const { handleCommand } = require('./commands')
 const { getStickerPackInfo } = require('./media')
 const { ownerJids } = require('./config')
@@ -111,12 +111,13 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
       const deleted = await deleteRecentStickers(sock, chatId, count)
       return safeSend(sock, chatId, { text: `🗑️ Deleted ${deleted} sticker(s).` })
     }
-    if (text.startsWith('/')) await handleCommand(sock, chatId, text)
+    if (text.startsWith('/')) await handleCommand(sock, chatId, text, msg)
     return
   }
 
-  if (SAFE_COMMAND_PREFIXES.some((prefix) => text.startsWith(prefix))) {
-    await handleCommand(sock, chatId, text)
+  const isBareStickerOrMake = /^\/(sticker|make)$/i.test(text)
+  if (isBareStickerOrMake || SAFE_COMMAND_PREFIXES.some((prefix) => text.startsWith(prefix))) {
+    await handleCommand(sock, chatId, text, msg)
     return
   }
 
@@ -126,13 +127,13 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
 
   if (mentioned || repliedToBot) {
     const question = text.replace(/@\d+/g, '').trim() || text
-    const answer = await askAI(question)
+    const answer = await withTyping(sock, chatId, () => askAI(question))
     await safeSend(sock, chatId, { text: answer })
     return
   }
 
   if (Math.random() < RANDOM_REPLY_CHANCE) {
-    const answer = await askAI(text)
+    const answer = await withTyping(sock, chatId, () => askAI(text))
     await safeSend(sock, chatId, { text: answer })
   }
 }

@@ -5,6 +5,10 @@ const { Sticker } = require('wa-sticker-formatter')
 const { downloadContentFromMessage } = require('@whiskeysockets/baileys')
 const { safeSend } = require('./safeSend')
 
+// wa-sticker-formatter needs ffmpeg to convert video/GIF stickers — point it at
+// the bundled binary so it works without a system-wide ffmpeg install.
+require('fluent-ffmpeg').setFfmpegPath(require('ffmpeg-static'))
+
 // Some hosts (e.g. Wikimedia) block requests without a browser-like User-Agent.
 const BROWSER_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -61,6 +65,34 @@ async function sendStickerFromCandidates(sock, jid, urls) {
   })
 }
 
+// Picks the downloadable media out of a quoted message (the one someone replied
+// to), if it's a photo, video/GIF, or sticker. Returns null otherwise.
+function getQuotedMediaContent(quotedMessage) {
+  if (quotedMessage?.imageMessage) return { content: quotedMessage.imageMessage, type: 'image' }
+  if (quotedMessage?.videoMessage) return { content: quotedMessage.videoMessage, type: 'video' }
+  if (quotedMessage?.stickerMessage) return { content: quotedMessage.stickerMessage, type: 'sticker' }
+  return null
+}
+
+// Converts whatever photo/GIF/video/sticker someone replied to into a new
+// sticker and sends it. Returns false if the quoted message wasn't usable media.
+async function sendStickerFromQuoted(sock, jid, quotedMessage) {
+  const media = getQuotedMediaContent(quotedMessage)
+  if (!media) return false
+  try {
+    const stream = await downloadContentFromMessage(media.content, media.type)
+    const chunks = []
+    for await (const chunk of stream) chunks.push(chunk)
+    const buffer = Buffer.concat(chunks)
+    const stickerMessage = await makeSticker(buffer).toMessage()
+    await safeSend(sock, jid, stickerMessage)
+    return true
+  } catch (err) {
+    console.error('Sticker-from-reply failed:', err.message)
+    return false
+  }
+}
+
 // Reads the pack name/publisher a sticker was made with, from the EXIF
 // metadata WhatsApp embeds in the .webp file. Returns null if it can't be
 // read (e.g. no metadata present).
@@ -95,5 +127,6 @@ module.exports = {
   sendStickerFromUrl,
   sendImageFromCandidates,
   sendStickerFromCandidates,
+  sendStickerFromQuoted,
   getStickerPackInfo,
 }

@@ -10,8 +10,15 @@ const { handleCommand } = require('./commands')
 const { handleGroupMessage } = require('./groupChat')
 const { startCronJobs, startOneOffChecker } = require('./scheduler')
 const { timezone } = require('./config')
+const settings = require('./settings')
 
 const logger = pino({ level: 'silent' }) // set to 'info' or 'debug' if you need to see Baileys' own logs
+
+// A bug in a dependency (e.g. an EventEmitter 'error' with no listener) would
+// otherwise crash the whole process and drop the WhatsApp connection. Log and
+// keep running instead — one failed operation shouldn't take the bot down.
+process.on('uncaughtException', (err) => console.error('Uncaught exception (bot kept running):', err))
+process.on('unhandledRejection', (err) => console.error('Unhandled rejection (bot kept running):', err))
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_session')
@@ -63,12 +70,16 @@ async function startBot() {
     const isGroupChat = chatId.endsWith('@g.us')
     if (!isSelfChat && !isGroupChat) return
 
+    if (!msg.key.fromMe && settings.get('readReceipts')) {
+      sock.readMessages([msg.key]).catch(() => {}) // best-effort — see /readreceipts
+    }
+
     const text = msg.message.conversation || msg.message.extendedTextMessage?.text || ''
 
     try {
       if (isSelfChat) {
         if (!text) return
-        await handleCommand(sock, chatId, text)
+        await handleCommand(sock, chatId, text, msg)
       } else {
         await handleGroupMessage(sock, chatId, msg, text, botJids)
       }
