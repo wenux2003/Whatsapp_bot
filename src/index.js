@@ -79,7 +79,7 @@ async function startBot() {
     try {
       if (isSelfChat) {
         if (!text) return
-        await handleCommand(sock, chatId, text, msg)
+        await handleCommand(sock, chatId, text, msg, { isOwner: true })
       } else {
         await handleGroupMessage(sock, chatId, msg, text, botJids)
       }

@@ -22,8 +22,9 @@ const {
 } = require('./search')
 const { askAI } = require('./ai')
 const { searchTrack } = require('./spotify')
-const { addOneOff } = require('./scheduler')
+const { addOneOff, addCronJob, dailyCron, weeklyCron, isValidTime, describeReminders, DAY_NUMBERS } = require('./scheduler')
 const { safeSend, withTyping, getLastSentKey } = require('./safeSend')
+const { timezone } = require('./config')
 const {
   createGroup,
   updateMembers,
@@ -60,6 +61,9 @@ const HELP_TEXT = `*Your WhatsApp bot — commands*
 /voice <name> <url> — send an audio file as a voice note
 /contact <name> — share an allow-listed contact's info as a vCard
 /schedule <name> <YYYY-MM-DDTHH:MM> <message> — send a message once, later
+/schedule daily <name> <HH:MM> <message> — repeat every day at that time
+/schedule weekly <name> <day> <HH:MM> <message> — repeat every week on that day
+/reminders — list every one-time, daily, and weekly reminder that's set
 
 *Search & links (replies here, in this chat)*
 /song <query> — Spotify track link, with preview (needs SPOTIFY_CLIENT_ID/SECRET)
@@ -103,7 +107,10 @@ const HELP_TEXT = `*Your WhatsApp bot — commands*
 
 *AI*
 /ai <question> — ask the AI directly
-(anything else you type here that isn't a command above is sent to the AI too)`
+(anything else you type here that isn't a command above is sent to the AI too)
+The AI can also just do things for you in plain English — e.g. "give me this song"
+or "remind sarah every monday at 9am to submit the report" — it runs the matching
+command itself and replies with the same result.`
 
 function splitCommand(text, maxParts) {
   // Splits into at most maxParts pieces, the last piece keeping the rest of the string intact.
@@ -114,9 +121,10 @@ function splitCommand(text, maxParts) {
   }, [])
 }
 
-async function handleCommand(sock, chatId, rawText, msg = null) {
+async function handleCommand(sock, chatId, rawText, msg = null, opts = {}) {
   const text = (rawText || '').trim()
   if (!text) return
+  const toolLevel = opts.isOwner ? 'full' : 'safe'
 
   if (/^\/(sticker|make)$/i.test(text)) {
     const quotedMessage = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage
@@ -260,6 +268,27 @@ async function handleCommand(sock, chatId, rawText, msg = null) {
     return
   }
 
+  if (text.startsWith('/schedule daily ')) {
+    const [, , name, time, message] = splitCommand(text, 5)
+    if (!resolveTarget(name)) return safeSend(sock, chatId, { text: `"${name}" isn't on your allow-list.` })
+    if (!isValidTime(time) || !message) {
+      return safeSend(sock, chatId, { text: 'Usage: /schedule daily <name> <HH:MM> <message>\ne.g. /schedule daily sarah 07:00 Good morning! ☀️' })
+    }
+    addCronJob(sock, timezone, { name: `daily-${name}-${time}`, cron: dailyCron(time), target: name, message, type: 'daily', time })
+    return safeSend(sock, chatId, { text: `🔁 Daily reminder set for ${time}.` })
+  }
+
+  if (text.startsWith('/schedule weekly ')) {
+    const [, , name, day, time, message] = splitCommand(text, 6)
+    if (!resolveTarget(name)) return safeSend(sock, chatId, { text: `"${name}" isn't on your allow-list.` })
+    const validDay = day && DAY_NUMBERS[day.toLowerCase()] !== undefined
+    if (!validDay || !isValidTime(time) || !message) {
+      return safeSend(sock, chatId, { text: 'Usage: /schedule weekly <name> <day> <HH:MM> <message>\ne.g. /schedule weekly team monday 09:00 Standup time!' })
+    }
+    addCronJob(sock, timezone, { name: `weekly-${name}-${day}-${time}`, cron: weeklyCron(day, time), target: name, message, type: 'weekly', day, time })
+    return safeSend(sock, chatId, { text: `📅 Weekly reminder set for ${day} at ${time}.` })
+  }
+
   if (text.startsWith('/schedule ')) {
     const [, name, atISO, message] = splitCommand(text, 4)
     if (!resolveTarget(name)) return safeSend(sock, chatId, { text: `"${name}" isn't on your allow-list.` })
@@ -269,6 +298,10 @@ async function handleCommand(sock, chatId, rawText, msg = null) {
     }
     addOneOff({ atISO: when.toISOString(), target: name, message })
     return safeSend(sock, chatId, { text: `⏰ Scheduled for ${when.toLocaleString()}.` })
+  }
+
+  if (text === '/reminders') {
+    return safeSend(sock, chatId, { text: describeReminders() })
   }
 
   // ---- Group management (must be run inside the group being managed) ----
@@ -476,14 +509,14 @@ async function handleCommand(sock, chatId, rawText, msg = null) {
   }
 
   if (text.startsWith('/ai ')) {
-    const answer = await withTyping(sock, chatId, () => askAI(text.slice(4)))
-    return safeSend(sock, chatId, { text: answer })
+    const answer = await withTyping(sock, chatId, () => askAI(text.slice(4), { toolLevel, sock, chatId }))
+    return answer ? safeSend(sock, chatId, { text: answer }) : undefined
   }
 
   // Anything else typed in the control chat that isn't a recognized command
   // is treated as a plain question for the AI.
-  const answer = await withTyping(sock, chatId, () => askAI(text))
-  return safeSend(sock, chatId, { text: answer })
+  const answer = await withTyping(sock, chatId, () => askAI(text, { toolLevel, sock, chatId }))
+  return answer ? safeSend(sock, chatId, { text: answer }) : undefined
 }
 
 module.exports = { handleCommand }

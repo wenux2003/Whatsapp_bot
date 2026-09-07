@@ -111,13 +111,13 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
       const deleted = await deleteRecentStickers(sock, chatId, count)
       return safeSend(sock, chatId, { text: `🗑️ Deleted ${deleted} sticker(s).` })
     }
-    if (text.startsWith('/')) await handleCommand(sock, chatId, text, msg)
+    if (text.startsWith('/')) await handleCommand(sock, chatId, text, msg, { isOwner: true })
     return
   }
 
   const isBareStickerOrMake = /^\/(sticker|make)$/i.test(text)
   if (isBareStickerOrMake || SAFE_COMMAND_PREFIXES.some((prefix) => text.startsWith(prefix))) {
-    await handleCommand(sock, chatId, text, msg)
+    await handleCommand(sock, chatId, text, msg, { isOwner: false })
     return
   }
 
@@ -127,14 +127,14 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
 
   if (mentioned || repliedToBot) {
     const question = text.replace(/@\d+/g, '').trim() || text
-    const answer = await withTyping(sock, chatId, () => askAI(question))
-    await safeSend(sock, chatId, { text: answer })
+    const answer = await withTyping(sock, chatId, () => askAI(question, { toolLevel: 'safe', sock, chatId }))
+    if (answer) await safeSend(sock, chatId, { text: answer })
     return
   }
 
   if (Math.random() < RANDOM_REPLY_CHANCE) {
-    const answer = await withTyping(sock, chatId, () => askAI(text))
-    await safeSend(sock, chatId, { text: answer })
+    const answer = await withTyping(sock, chatId, () => askAI(text, { toolLevel: 'safe', sock, chatId }))
+    if (answer) await safeSend(sock, chatId, { text: answer })
   }
 }
 

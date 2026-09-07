@@ -1,8 +1,10 @@
 require('dotenv').config()
 
 module.exports = {
-  // PLACEHOLDER — free key, see .env.example for where to get it.
-  geminiApiKey: process.env.GEMINI_API_KEY || null,
+  // PLACEHOLDER — free key, see .env.example for where to get it. Comma-separated
+  // for more than one — the bot rotates to the next one when a key's free-tier
+  // quota runs out, instead of failing.
+  geminiApiKeys: (process.env.GEMINI_API_KEY || '').split(',').map((s) => s.trim()).filter(Boolean),
   // PLACEHOLDER — optional, paid beyond a trial credit, see .env.example.
   serpApiKey: process.env.SERPAPI_KEY || null,
   // PLACEHOLDER — optional, free, see .env.example for where to get these.
