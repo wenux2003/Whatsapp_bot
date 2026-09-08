@@ -18,6 +18,7 @@ const { safeSend, withTyping } = require('./safeSend')
 const { handleCommand } = require('./commands')
 const { getStickerPackInfo } = require('./media')
 const { ownerJids } = require('./config')
+const pendingActions = require('./pendingActions')
 
 const RANDOM_REPLY_CHANCE = 1 / 15
 const MAX_TRACKED_STICKERS = 200
@@ -111,7 +112,11 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
       const deleted = await deleteRecentStickers(sock, chatId, count)
       return safeSend(sock, chatId, { text: `🗑️ Deleted ${deleted} sticker(s).` })
     }
-    if (text.startsWith('/')) await handleCommand(sock, chatId, text, msg, { isOwner: true })
+    const isDownloadCommand = /^\.(song|yt|tik|inst|fb) /.test(text)
+    const hasPendingAction = !!pendingActions.get(chatId)
+    if (text.startsWith('/') || isDownloadCommand || hasPendingAction) {
+      await handleCommand(sock, chatId, text, msg, { isOwner: true })
+    }
     return
   }
 

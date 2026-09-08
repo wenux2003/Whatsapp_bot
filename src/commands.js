@@ -47,6 +47,85 @@ const {
 } = require('./profile')
 const { postTextStatus, postImageStatus } = require('./status')
 const settings = require('./settings')
+const { searchYoutube, getVideoInfo, downloadAudio, downloadVideoAtQuality, downloadBest } = require('./downloader')
+const pendingActions = require('./pendingActions')
+
+const QUALITY_OPTIONS = [
+  { label: '360p', height: 360 },
+  { label: '480p', height: 480 },
+  { label: '720p', height: 720 },
+]
+const PIN_DURATIONS = [
+  { label: '24 hours', seconds: 86400 },
+  { label: '7 days', seconds: 604800 },
+  { label: '30 days', seconds: 2592000 },
+]
+
+// Runs a download and either sends the result or a friendly error — always
+// cleans up the temp file afterward, and never throws back to the caller.
+async function sendDownloadResult(sock, chatId, downloadFn, mediaKey, extraFields = {}) {
+  let result
+  try {
+    result = await downloadFn()
+  } catch (err) {
+    return safeSend(sock, chatId, { text: `⚠️ Couldn't download that: ${err.message}` })
+  }
+  try {
+    const buffer = require('fs').readFileSync(result.file)
+    await safeSend(sock, chatId, { [mediaKey]: buffer, ...extraFields })
+  } catch (err) {
+    return safeSend(sock, chatId, { text: `⚠️ Downloaded it, but couldn't send it (probably too large for WhatsApp): ${err.message}` })
+  } finally {
+    result.cleanup()
+  }
+}
+
+// Handles a bare reply (e.g. "2") when a multi-step flow (.yt selection,
+// /pin duration) is waiting on this chat. Returns true if it consumed the
+// reply, so the caller knows not to fall through to normal command parsing.
+async function resolvePendingAction(sock, chatId, text) {
+  const entry = pendingActions.get(chatId)
+  if (!entry) return false
+  const choice = parseInt(text.trim(), 10)
+
+  if (entry.type === 'yt-select') {
+    const video = entry.data.results[choice - 1]
+    if (!video) return false // not a valid selection — let it fall through (e.g. to AI)
+    pendingActions.set(chatId, 'yt-quality', { video })
+    const list = QUALITY_OPTIONS.map((q, i) => `${i + 1}. ${q.label}`).join('\n')
+    await safeSend(sock, chatId, { text: `📺 *${video.title}*\nPick a quality:\n${list}` })
+    return true
+  }
+
+  if (entry.type === 'yt-quality') {
+    const quality = QUALITY_OPTIONS[choice - 1]
+    if (!quality) return false
+    pendingActions.clear(chatId)
+    await safeSend(sock, chatId, { text: `⏳ Downloading "${entry.data.video.title}" at ${quality.label}...` })
+    await sendDownloadResult(
+      sock, chatId,
+      () => downloadVideoAtQuality(entry.data.video.url, quality.height),
+      'video',
+      { caption: entry.data.video.title }
+    )
+    return true
+  }
+
+  if (entry.type === 'pin-duration') {
+    const duration = PIN_DURATIONS[choice - 1]
+    if (!duration) return false
+    pendingActions.clear(chatId)
+    try {
+      await sock.sendMessage(chatId, { pin: entry.data.quotedKey, type: 1, time: duration.seconds })
+      await safeSend(sock, chatId, { text: `📌 Pinned for ${duration.label}.` })
+    } catch (err) {
+      await safeSend(sock, chatId, { text: `⚠️ Couldn't pin that: ${err.message}` })
+    }
+    return true
+  }
+
+  return false
+}
 
 const HELP_TEXT = `*Your WhatsApp bot — commands*
 
@@ -74,9 +153,16 @@ const HELP_TEXT = `*Your WhatsApp bot — commands*
 *In-chat tools*
 /react <emoji> (as a reply) — react to that message
 /star (as a reply) — star that message
+/pin (as a reply) — pin that message; asks how long (24h/7d/30d)
 /poll <question> | <option1> | <option2> | ... — create a poll here
 /edit <new text> — edit the bot's own last message in this chat
 /readreceipts on|off — toggle whether the bot marks messages as read
+
+*Media downloads*
+.song <name> — download the best-quality audio for a song and send it here
+.yt <name> — search YouTube; reply with a number to pick a video, then a
+  number again to pick 360p/480p/720p, and it downloads and sends it
+.tik <url> / .inst <url> / .fb <url> — download that TikTok/Instagram/Facebook video
 
 *Group management (run inside the group you want to manage)*
 /creategroup <name> | <number1,number2,...> — create a new group
@@ -125,6 +211,59 @@ async function handleCommand(sock, chatId, rawText, msg = null, opts = {}) {
   const text = (rawText || '').trim()
   if (!text) return
   const toolLevel = opts.isOwner ? 'full' : 'safe'
+
+  if (opts.isOwner && (await resolvePendingAction(sock, chatId, text))) return
+
+  if (text === '/pin') {
+    const contextInfo = msg?.message?.extendedTextMessage?.contextInfo
+    if (!contextInfo?.stanzaId) return safeSend(sock, chatId, { text: 'Reply to a message with /pin to pin it.' })
+    const quotedKey = { remoteJid: chatId, id: contextInfo.stanzaId, fromMe: false, participant: contextInfo.participant }
+    pendingActions.set(chatId, 'pin-duration', { quotedKey })
+    const list = PIN_DURATIONS.map((d, i) => `${i + 1}. ${d.label}`).join('\n')
+    return safeSend(sock, chatId, { text: `📌 Pin for how long?\n${list}` })
+  }
+
+  if (text.startsWith('.song ')) {
+    const query = text.slice(6).trim()
+    const isUrl = /^https?:\/\//i.test(query)
+    let top
+    try {
+      top = isUrl ? await getVideoInfo(query) : (await searchYoutube(query, 1))[0]
+    } catch (err) {
+      return safeSend(sock, chatId, { text: `😕 Couldn't look that up: ${err.message}` })
+    }
+    if (!top) return safeSend(sock, chatId, { text: `😕 Couldn't find "${query}".` })
+    await safeSend(sock, chatId, { text: `⏳ Downloading audio for "${top.title}"...` })
+    await sendDownloadResult(sock, chatId, () => downloadAudio(top.url), 'audio', { mimetype: 'audio/mpeg' })
+    return
+  }
+
+  if (text.startsWith('.yt ')) {
+    const query = text.slice(4).trim()
+    if (/^https?:\/\//i.test(query)) {
+      let video
+      try {
+        video = await getVideoInfo(query)
+      } catch (err) {
+        return safeSend(sock, chatId, { text: `😕 Couldn't look that up: ${err.message}` })
+      }
+      pendingActions.set(chatId, 'yt-quality', { video })
+      const list = QUALITY_OPTIONS.map((q, i) => `${i + 1}. ${q.label}`).join('\n')
+      return safeSend(sock, chatId, { text: `📺 *${video.title}*\nPick a quality:\n${list}` })
+    }
+    const results = await searchYoutube(query, 5)
+    if (!results.length) return safeSend(sock, chatId, { text: `😕 Couldn't find any videos for "${query}".` })
+    pendingActions.set(chatId, 'yt-select', { results })
+    const list = results.map((r, i) => `${i + 1}. ${r.title}${r.channel ? ` — ${r.channel}` : ''}`).join('\n')
+    return safeSend(sock, chatId, { text: `📺 Results for "${query}":\n${list}\n\nReply with a number to pick one.` })
+  }
+
+  if (text.startsWith('.tik ') || text.startsWith('.inst ') || text.startsWith('.fb ')) {
+    const url = text.slice(text.indexOf(' ') + 1).trim()
+    await safeSend(sock, chatId, { text: '⏳ Downloading...' })
+    await sendDownloadResult(sock, chatId, () => downloadBest(url), 'video')
+    return
+  }
 
   if (/^\/(sticker|make)$/i.test(text)) {
     const quotedMessage = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage
