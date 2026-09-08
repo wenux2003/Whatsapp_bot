@@ -47,38 +47,34 @@ const {
 } = require('./profile')
 const { postTextStatus, postImageStatus } = require('./status')
 const settings = require('./settings')
-const { searchYoutube, getVideoInfo, downloadAudio, downloadVideoAtQuality, downloadBest } = require('./downloader')
+const { searchYoutube, getVideoInfo, downloadAudio, downloadVideoAtQuality, downloadBest, sendDownloadResult } = require('./downloader')
 const pendingActions = require('./pendingActions')
 
 const QUALITY_OPTIONS = [
   { label: '360p', height: 360 },
   { label: '480p', height: 480 },
   { label: '720p', height: 720 },
+  { label: '1080p', height: 1080 },
 ]
 const PIN_DURATIONS = [
   { label: '24 hours', seconds: 86400 },
   { label: '7 days', seconds: 604800 },
   { label: '30 days', seconds: 2592000 },
 ]
+const SONG_FORMATS = [
+  { label: 'WhatsApp audio', type: 'audio' },
+  { label: 'Document (file)', type: 'document' },
+]
 
-// Runs a download and either sends the result or a friendly error — always
-// cleans up the temp file afterward, and never throws back to the caller.
-async function sendDownloadResult(sock, chatId, downloadFn, mediaKey, extraFields = {}) {
-  let result
-  try {
-    result = await downloadFn()
-  } catch (err) {
-    return safeSend(sock, chatId, { text: `⚠️ Couldn't download that: ${err.message}` })
-  }
-  try {
-    const buffer = require('fs').readFileSync(result.file)
-    await safeSend(sock, chatId, { [mediaKey]: buffer, ...extraFields })
-  } catch (err) {
-    return safeSend(sock, chatId, { text: `⚠️ Downloaded it, but couldn't send it (probably too large for WhatsApp): ${err.message}` })
-  } finally {
-    result.cleanup()
-  }
+// Sends the quality-pick prompt for a video as a numbered text list — WhatsApp
+// buttons/list messages were tried and confirmed not to render on this account
+// (WhatsApp has stopped showing them for most non-Business-API senders), so
+// plain numbered replies are the real selection mechanism.
+async function promptQuality(sock, chatId, video) {
+  const list = QUALITY_OPTIONS.map((q, i) => `${i + 1}. ${q.label}`).join('\n')
+  await safeSend(sock, chatId, { text: `📺 *${video.title}*\nPick a quality:\n${list}` })
 }
+
 
 // Handles a bare reply (e.g. "2") when a multi-step flow (.yt selection,
 // /pin duration) is waiting on this chat. Returns true if it consumed the
@@ -92,8 +88,7 @@ async function resolvePendingAction(sock, chatId, text) {
     const video = entry.data.results[choice - 1]
     if (!video) return false // not a valid selection — let it fall through (e.g. to AI)
     pendingActions.set(chatId, 'yt-quality', { video })
-    const list = QUALITY_OPTIONS.map((q, i) => `${i + 1}. ${q.label}`).join('\n')
-    await safeSend(sock, chatId, { text: `📺 *${video.title}*\nPick a quality:\n${list}` })
+    await promptQuality(sock, chatId, video)
     return true
   }
 
@@ -107,6 +102,23 @@ async function resolvePendingAction(sock, chatId, text) {
       () => downloadVideoAtQuality(entry.data.video.url, quality.height),
       'video',
       { caption: entry.data.video.title }
+    )
+    return true
+  }
+
+  if (entry.type === 'song-format') {
+    const format = SONG_FORMATS[choice - 1]
+    if (!format) return false
+    pendingActions.clear(chatId)
+    const { video } = entry.data
+    await safeSend(sock, chatId, { text: `⏳ Downloading audio for "${video.title}"...` })
+    await sendDownloadResult(
+      sock, chatId,
+      () => downloadAudio(video.url),
+      format.type,
+      format.type === 'document'
+        ? { mimetype: 'audio/mpeg', fileName: `${video.title}.mp3` }
+        : { mimetype: 'audio/mpeg' }
     )
     return true
   }
@@ -233,8 +245,9 @@ async function handleCommand(sock, chatId, rawText, msg = null, opts = {}) {
       return safeSend(sock, chatId, { text: `😕 Couldn't look that up: ${err.message}` })
     }
     if (!top) return safeSend(sock, chatId, { text: `😕 Couldn't find "${query}".` })
-    await safeSend(sock, chatId, { text: `⏳ Downloading audio for "${top.title}"...` })
-    await sendDownloadResult(sock, chatId, () => downloadAudio(top.url), 'audio', { mimetype: 'audio/mpeg' })
+    pendingActions.set(chatId, 'song-format', { video: top })
+    const list = SONG_FORMATS.map((f, i) => `${i + 1}. ${f.label}`).join('\n')
+    await safeSend(sock, chatId, { text: `🎵 *${top.title}*\nSend it as:\n${list}` })
     return
   }
 
@@ -248,8 +261,8 @@ async function handleCommand(sock, chatId, rawText, msg = null, opts = {}) {
         return safeSend(sock, chatId, { text: `😕 Couldn't look that up: ${err.message}` })
       }
       pendingActions.set(chatId, 'yt-quality', { video })
-      const list = QUALITY_OPTIONS.map((q, i) => `${i + 1}. ${q.label}`).join('\n')
-      return safeSend(sock, chatId, { text: `📺 *${video.title}*\nPick a quality:\n${list}` })
+      await promptQuality(sock, chatId, video)
+      return
     }
     const results = await searchYoutube(query, 5)
     if (!results.length) return safeSend(sock, chatId, { text: `😕 Couldn't find any videos for "${query}".` })
