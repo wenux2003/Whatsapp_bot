@@ -65,7 +65,7 @@ Your bot needs to hold **one persistent, always-open WebSocket connection** to W
 
 "Search and show results — pictures, YouTube links, other links" needs two separate ingredients:
 
-1. **An LLM to understand the request and write a reply** — e.g. Google's **Gemini API free tier** (no card required to start, generous daily request allowance) or Anthropic/OpenAI (better quality, but paid beyond a small trial credit). Gemini free tier is the practical "stays free" choice.
+1. **An LLM to understand the request and write a reply** — e.g. **Groq's API free tier** (no card required to start, fast inference, generous daily request allowance) or Anthropic/OpenAI (better quality, but paid beyond a small trial credit). Groq's free tier is the practical "stays free" choice.
 2. **A way to actually fetch live web/image/video results** — this is the part your message conflates with "AI," so it's worth separating: an LLM doesn't browse the web on its own unless you give it a search tool. Options:
    - **Paid-but-cheap SERP APIs** (SerpApi, Serper.dev) — reliable, structured results (images, links, etc.), but only a one-time free trial credit, then a small per-request cost.
    - **Google Programmable Search (Custom Search JSON API)** — has a 100-queries/day free tier, but heads-up: **it's closed to new sign-ups and Google is discontinuing it on January 1, 2027**, so it's not a good long-term foundation to build on now.
@@ -266,14 +266,16 @@ await sock.sendMessage(chatId, await sticker.toMessage())
 Wire the fall-through in `handleCommand` to an LLM, and give it your link-construction helpers as tools it can call (YouTube search link, Google search link, and — if you add a paid SERP API later — real image/result lookups).
 
 ```js
-// npm install @google/generative-ai   (Gemini, free tier)
-const { GoogleGenerativeAI } = require('@google/generative-ai')
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
-const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' })
+// npm install groq-sdk   (Groq, free tier)
+const Groq = require('groq-sdk')
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
 async function askAI(question) {
-  const result = await model.generateContent(question)
-  return result.response.text()
+  const result = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{ role: 'user', content: question }],
+  })
+  return result.choices[0].message.content
 }
 ```
 Start simple (plain Q&A replies); add the "pull a real image/top search result" capability only once the SERP-API cost/benefit makes sense for you (see §2).
@@ -305,10 +307,10 @@ Start simple (plain Q&A replies); add the "pull a real image/top search result" 
 | Baileys library | Free, open source |
 | Hosting (Oracle Always Free VM) | Free forever, within the Always Free limits |
 | Scheduling, stickers, sending images from URLs | Free — just code |
-| Gemini API (LLM for chat) | Free tier is generous for personal use; only becomes paid at high volume |
+| Groq API (LLM for chat) | Free tier is generous for personal use; only becomes paid at high volume |
 | Real search results with images (SerpApi/Serper/Google CSE) | Free trial only, then paid per request — or skip it and use direct search links (fully free, see §2) |
 
-So the whole thing can run at **$0/month** if you stick to the link-construction approach for search and Gemini's free tier for AI replies. The only place real cost enters is if you later want the bot to fetch and pick actual top search results/images rather than linking to a search page.
+So the whole thing can run at **$0/month** if you stick to the link-construction approach for search and Groq's free tier for AI replies. The only place real cost enters is if you later want the bot to fetch and pick actual top search results/images rather than linking to a search page.
 
 ---
 

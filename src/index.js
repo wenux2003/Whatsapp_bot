@@ -8,6 +8,7 @@ const qrcode = require('qrcode-terminal')
 const pino = require('pino')
 const { handleCommand } = require('./commands')
 const { handleGroupMessage } = require('./groupChat')
+const { handleDirectMessage } = require('./dmChat')
 const { startCronJobs, startOneOffChecker } = require('./scheduler')
 const { timezone } = require('./config')
 const settings = require('./settings')
@@ -62,13 +63,14 @@ async function startBot() {
 
     // "Message Yourself" is the full-access control chat — see WHATSAPP_BOT_GUIDE.md §3.
     // Any group the bot is in gets a lighter-touch experience — see groupChat.js.
+    // A direct 1-on-1 message from anyone else gets the same safe subset — see dmChat.js.
     const myNumberJid = sock.user?.id?.split(':')[0] + '@s.whatsapp.net'
     const myLidJid = sock.user?.lid?.split(':')[0] + '@lid'
     const botJids = { myNumberJid, myLidJid }
     const chatId = msg.key.remoteJid
     const isSelfChat = (chatId === myNumberJid || chatId === myLidJid) && msg.key.fromMe
     const isGroupChat = chatId.endsWith('@g.us')
-    if (!isSelfChat && !isGroupChat) return
+    const isDirectMessage = !isSelfChat && !isGroupChat
 
     if (!msg.key.fromMe && settings.get('readReceipts')) {
       sock.readMessages([msg.key]).catch(() => {}) // best-effort — see /readreceipts
@@ -80,8 +82,10 @@ async function startBot() {
       if (isSelfChat) {
         if (!text) return
         await handleCommand(sock, chatId, text, msg, { isOwner: true })
-      } else {
+      } else if (isGroupChat) {
         await handleGroupMessage(sock, chatId, msg, text, botJids)
+      } else if (isDirectMessage) {
+        await handleDirectMessage(sock, chatId, msg, text)
       }
     } catch (err) {
       console.error('Message handling error:', err)

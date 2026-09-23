@@ -1,10 +1,10 @@
-// Small persisted bot-wide settings (currently just the read-receipts toggle).
+// Small persisted bot-wide settings (read-receipts, voice-reply toggles).
 
 const fs = require('fs')
 const path = require('path')
 
 const SETTINGS_PATH = path.join(__dirname, '..', 'settings.json')
-const DEFAULTS = { readReceipts: true }
+const DEFAULTS = { readReceipts: true, voiceReplies: true }
 
 function loadSettings() {
   try {

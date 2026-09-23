@@ -15,7 +15,7 @@ const fs = require('fs')
 const path = require('path')
 const { askAI } = require('./ai')
 const { safeSend, withTyping } = require('./safeSend')
-const { handleCommand } = require('./commands')
+const { handleCommand, sendAIAnswer } = require('./commands')
 const { getStickerPackInfo } = require('./media')
 const { ownerJids } = require('./config')
 const pendingActions = require('./pendingActions')
@@ -121,7 +121,8 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
   }
 
   const isBareStickerOrMake = /^\/(sticker|make)$/i.test(text)
-  if (isBareStickerOrMake || SAFE_COMMAND_PREFIXES.some((prefix) => text.startsWith(prefix))) {
+  const hasPendingAction = !!pendingActions.get(chatId)
+  if (isBareStickerOrMake || hasPendingAction || SAFE_COMMAND_PREFIXES.some((prefix) => text.startsWith(prefix))) {
     await handleCommand(sock, chatId, text, msg, { isOwner: false })
     return
   }
@@ -133,14 +134,14 @@ async function handleGroupMessage(sock, chatId, msg, text, botJids) {
   if (mentioned || repliedToBot) {
     const question = text.replace(/@\d+/g, '').trim() || text
     const answer = await withTyping(sock, chatId, () => askAI(question, { toolLevel: 'safe', sock, chatId }))
-    if (answer) await safeSend(sock, chatId, { text: answer })
+    await sendAIAnswer(sock, chatId, answer)
     return
   }
 
   if (Math.random() < RANDOM_REPLY_CHANCE) {
     const answer = await withTyping(sock, chatId, () => askAI(text, { toolLevel: 'safe', sock, chatId }))
-    if (answer) await safeSend(sock, chatId, { text: answer })
+    await sendAIAnswer(sock, chatId, answer)
   }
 }
 
-module.exports = { handleGroupMessage }
+module.exports = { handleGroupMessage, SAFE_COMMAND_PREFIXES }

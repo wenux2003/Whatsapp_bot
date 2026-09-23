@@ -14,7 +14,7 @@ npm install
 
 Copy `.env.example` to a new file named `.env` in this same folder, then open `.env` and fill in what you want:
 
-- `GEMINI_API_KEY` — **placeholder, needs your own key.** Free, no card required. Get one at https://aistudio.google.com/apikey. Without it, `/ai` and the natural-chat fallback will just tell you AI isn't configured yet — everything else still works.
+- `GROQ_API_KEY` — **placeholder, needs your own key.** Free, no card required. Get one at https://console.groq.com/keys. Without it, `/ai` and the natural-chat fallback will just tell you AI isn't configured yet — everything else still works.
 - `SERPAPI_KEY` — **placeholder, optional.** Only needed if you want `/img` to return a real top image instead of a Google Images search link. Free trial credit only, then paid — see `SERPAPI.md` note in the guide. Leave blank to skip.
 
 ## 2.5. (Optional) media downloads (`.song`, `.yt`, `.tik`, `.inst`, `.fb`)

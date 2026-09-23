@@ -21,6 +21,7 @@ const {
   googleSearchResults,
 } = require('./search')
 const { askAI } = require('./ai')
+const { textToSpeech, textToSpeechHQ } = require('./tts')
 const { searchTrack } = require('./spotify')
 const { addOneOff, addCronJob, dailyCron, weeklyCron, isValidTime, describeReminders, DAY_NUMBERS } = require('./scheduler')
 const { safeSend, withTyping, getLastSentKey } = require('./safeSend')
@@ -75,6 +76,22 @@ async function promptQuality(sock, chatId, video) {
   await safeSend(sock, chatId, { text: `📺 *${video.title}*\nPick a quality:\n${list}` })
 }
 
+const VOICE_REPLY_CHANCE = 0.4 // only a chance, and only for short answers — see below
+const VOICE_REPLY_MAX_CHARS = 220 // roughly a sentence or two — long answers stay text-only
+
+// Sends an AI answer as text (always), and — for short answers/explanations
+// only, and only some of the time — also as a voice note, so it feels natural
+// rather than reading every reply aloud. /voicereplies off disables this
+// entirely; voice generation failing never blocks the text reply.
+async function sendAIAnswer(sock, chatId, answer) {
+  if (!answer) return
+  await safeSend(sock, chatId, { text: answer })
+  if (settings.get('voiceReplies') === false) return
+  if (answer.length > VOICE_REPLY_MAX_CHARS) return
+  if (Math.random() >= VOICE_REPLY_CHANCE) return
+  const voice = await textToSpeech(answer)
+  if (voice) await safeSend(sock, chatId, { audio: voice.buffer, mimetype: voice.mimetype, ptt: true })
+}
 
 // Handles a bare reply (e.g. "2") when a multi-step flow (.yt selection,
 // /pin duration) is waiting on this chat. Returns true if it consumed the
@@ -168,7 +185,9 @@ const HELP_TEXT = `*Your WhatsApp bot — commands*
 /pin (as a reply) — pin that message; asks how long (24h/7d/30d)
 /poll <question> | <option1> | <option2> | ... — create a poll here
 /edit <new text> — edit the bot's own last message in this chat
+/voice (as a reply to a text message) — convert that message into a voice note
 /readreceipts on|off — toggle whether the bot marks messages as read
+/voicereplies on|off — toggle whether short AI answers can also come as a voice note (default on — random chance, short answers only)
 
 *Media downloads*
 .song <name> — download the best-quality audio for a song and send it here
@@ -224,7 +243,9 @@ async function handleCommand(sock, chatId, rawText, msg = null, opts = {}) {
   if (!text) return
   const toolLevel = opts.isOwner ? 'full' : 'safe'
 
-  if (opts.isOwner && (await resolvePendingAction(sock, chatId, text))) return
+  // Pending multi-step flows (.yt/.song selection) are scoped per-chat, so
+  // whoever's mid-flow in this chat can complete it — owner or not.
+  if (await resolvePendingAction(sock, chatId, text)) return
 
   if (text === '/pin') {
     const contextInfo = msg?.message?.extendedTextMessage?.contextInfo
@@ -326,6 +347,26 @@ async function handleCommand(sock, chatId, rawText, msg = null, opts = {}) {
     if (value !== 'on' && value !== 'off') return safeSend(sock, chatId, { text: 'Usage: /readreceipts on|off' })
     settings.set('readReceipts', value === 'on')
     return safeSend(sock, chatId, { text: `👁️ Read receipts turned ${value}.` })
+  }
+
+  if (text.startsWith('/voicereplies ')) {
+    const value = text.slice(14).trim().toLowerCase()
+    if (value !== 'on' && value !== 'off') return safeSend(sock, chatId, { text: 'Usage: /voicereplies on|off' })
+    settings.set('voiceReplies', value === 'on')
+    return safeSend(sock, chatId, {
+      text: value === 'on'
+        ? '🎙️ Voice replies turned on — short AI answers will sometimes also come as a voice note.'
+        : '🎙️ Voice replies turned off.',
+    })
+  }
+
+  if (text === '/voice') {
+    const quotedMessage = msg?.message?.extendedTextMessage?.contextInfo?.quotedMessage
+    const quotedText = quotedMessage?.conversation || quotedMessage?.extendedTextMessage?.text
+    if (!quotedText) return safeSend(sock, chatId, { text: 'Reply to a text message with /voice to convert it into a voice note.' })
+    const voice = await textToSpeechHQ(quotedText)
+    if (!voice) return safeSend(sock, chatId, { text: "⚠️ Couldn't generate voice — check GROQ_API_KEY/ELEVENLABS_API_KEY in .env." })
+    return safeSend(sock, chatId, { audio: voice.buffer, mimetype: voice.mimetype, ptt: true })
   }
 
   if (text === '/help') {
@@ -662,13 +703,13 @@ async function handleCommand(sock, chatId, rawText, msg = null, opts = {}) {
 
   if (text.startsWith('/ai ')) {
     const answer = await withTyping(sock, chatId, () => askAI(text.slice(4), { toolLevel, sock, chatId }))
-    return answer ? safeSend(sock, chatId, { text: answer }) : undefined
+    return sendAIAnswer(sock, chatId, answer)
   }
 
   // Anything else typed in the control chat that isn't a recognized command
   // is treated as a plain question for the AI.
   const answer = await withTyping(sock, chatId, () => askAI(text, { toolLevel, sock, chatId }))
-  return answer ? safeSend(sock, chatId, { text: answer }) : undefined
+  return sendAIAnswer(sock, chatId, answer)
 }
 
-module.exports = { handleCommand }
+module.exports = { handleCommand, sendAIAnswer }

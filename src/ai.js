@@ -1,16 +1,20 @@
-// "Mini AI" chat replies via Google's Gemini API (free tier, no card required to start).
-// PLACEHOLDER — set GEMINI_API_KEY in .env (see .env.example) to enable this.
+// "Mini AI" chat replies via Groq's API (free tier, no card required to start).
+// PLACEHOLDER — set GROQ_API_KEY in .env (see .env.example) to enable this.
 // Until then, askAI() just tells you it's not configured instead of crashing.
 //
-// Gemini can also be given "tools" — /ai (and, with a safe read-only subset,
+// The model can also be given "tools" — /ai (and, with a safe read-only subset,
 // group mentions/random replies) can trigger most of the bot's own commands
 // from a plain-English request, and the reply matches what the equivalent
 // slash/dot command would send. Full tool access (sending messages, managing
 // groups, scheduling, downloads) is owner-only; group members' AI replies only
 // get read-only lookups, so a prompt-injected message can't trigger real actions.
 
-const { GoogleGenAI, Type } = require('@google/genai')
-const { geminiApiKeys, serpApiKey, timezone } = require('./config')
+const Groq = require('groq-sdk')
+// Groq's tool-calling schema uses plain lowercase JSON-Schema type strings —
+// this just lets every tool below keep using the same Type.OBJECT/STRING/etc.
+// spelling as before, with zero changes to the (large) tool definitions.
+const Type = { OBJECT: 'object', STRING: 'string', ARRAY: 'array', BOOLEAN: 'boolean' }
+const { groqApiKeys, serpApiKey, timezone } = require('./config')
 const { googleSearchResults, youtubeTopVideo, youtubeSearchLink, googleSearchLink, googleImagesLink, imageSearchCandidates } = require('./search')
 const { searchTrack } = require('./spotify')
 const { sendImageFromCandidates } = require('./media')
@@ -30,7 +34,7 @@ const { isOnWhatsApp, getProfilePictureUrl, getAboutText, setOwnName, setOwnStat
 const { postTextStatus } = require('./status')
 const { searchYoutube, getVideoInfo, downloadAudio, downloadVideoAtQuality, downloadBest, sendDownloadResult } = require('./downloader')
 
-const MODEL = 'gemini-flash-latest' // check https://ai.google.dev/gemini-api/docs/models if this stops working
+const MODEL = 'llama-3.3-70b-versatile' // check https://console.groq.com/docs/models if this stops working
 const SYSTEM_INSTRUCTION = 'You reply over WhatsApp chat. Use simple, easy English. ' +
   'When giving detailed answers or data (lists, facts, explanations), use relevant emojis ' +
   'to make it friendly and easy to scan. Keep it concise. ' +
@@ -41,19 +45,19 @@ const SYSTEM_INSTRUCTION = 'You reply over WhatsApp chat. Use simple, easy Engli
   'how to do it manually — actually do it. If a request needs multiple tools (e.g. a reminder and a song), call all of them.'
 
 // One client per key — rotated on quota errors so a single exhausted free-tier
-// key doesn't take the whole bot down. See GEMINI_API_KEY in .env.example.
-const clients = geminiApiKeys.map((apiKey) => new GoogleGenAI({ apiKey }))
+// key doesn't take the whole bot down. See GROQ_API_KEY in .env.example.
+const clients = groqApiKeys.map((apiKey) => new Groq({ apiKey }))
 let currentClientIndex = 0
 
 const RETRY_DELAYS_MS = [1000, 3000] // retry twice (per key) before giving up
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 function isOverloaded(err) {
-  return err.message?.includes('"code":503') || err.message?.includes('UNAVAILABLE')
+  return err.status === 503 || err.status === 500 || err.status === 502
 }
 
 function isQuotaExceeded(err) {
-  return err.message?.includes('"code":429') || err.message?.includes('RESOURCE_EXHAUSTED') || err.message?.includes('quota')
+  return err.status === 429
 }
 
 async function buildGroundedContents(question) {
@@ -70,7 +74,7 @@ async function buildGroundedContents(question) {
   }
 }
 
-// ---- Tools Gemini can call. See runTool() below for what each one does. ----
+// ---- Tools the model can call. See runTool() below for what each one does. ----
 
 const SAFE_TOOLS = [
   {
@@ -426,42 +430,48 @@ async function runTool(call, ctx) {
 // are required whenever toolLevel is set, so tools can act (e.g. send a photo).
 async function askAI(question, opts = {}) {
   if (!clients.length) {
-    return 'AI replies aren\'t set up yet — add a free GEMINI_API_KEY to .env (see README.md) and restart the bot.'
+    return 'AI replies aren\'t set up yet — add a free GROQ_API_KEY to .env (see README.md) and restart the bot.'
   }
   const tools = toolsForLevel(opts.toolLevel)
   const contents = await buildGroundedContents(question)
+  const messages = [
+    { role: 'system', content: SYSTEM_INSTRUCTION },
+    { role: 'user', content: contents },
+  ]
 
   while (currentClientIndex < clients.length) {
     const client = clients[currentClientIndex]
     for (let attempt = 0; ; attempt++) {
       try {
-        const response = await client.models.generateContent({
+        const response = await client.chat.completions.create({
           model: MODEL,
-          contents,
-          config: {
-            systemInstruction: SYSTEM_INSTRUCTION,
-            ...(tools ? { tools: [{ functionDeclarations: tools }] } : {}),
-          },
+          messages,
+          ...(tools ? { tools: tools.map((t) => ({ type: 'function', function: t })), tool_choice: 'auto' } : {}),
         })
-        const calls = response.functionCalls
+        const message = response.choices[0].message
+        const calls = message.tool_calls
         if (calls?.length) {
           const results = []
           for (const call of calls) {
-            const result = await runTool(call, { sock: opts.sock, chatId: opts.chatId })
+            let args = {}
+            try {
+              args = JSON.parse(call.function.arguments || '{}')
+            } catch { /* leave args empty if the model sent malformed JSON */ }
+            const result = await runTool({ name: call.function.name, args }, { sock: opts.sock, chatId: opts.chatId })
             if (result) results.push(result)
           }
           return results.length ? results.join('\n\n') : null
         }
-        return response.text || "(the AI didn't return anything)"
+        return message.content || "(the AI didn't return anything)"
       } catch (err) {
         if (isQuotaExceeded(err)) {
-          console.warn(`Gemini key #${currentClientIndex + 1} is over quota — switching to the next one.`)
+          console.warn(`Groq key #${currentClientIndex + 1} is over quota — switching to the next one.`)
           currentClientIndex++
           break // move to the next key
         }
         const canRetry = isOverloaded(err) && attempt < RETRY_DELAYS_MS.length
         if (!canRetry) {
-          console.error('Gemini request failed:', err.message)
+          console.error('Groq request failed:', err.message)
           return isOverloaded(err)
             ? '⚠️ The AI is a bit overloaded right now — try again in a moment.'
             : `⚠️ AI request failed: ${err.message}`
@@ -470,7 +480,7 @@ async function askAI(question, opts = {}) {
       }
     }
   }
-  return '⚠️ All configured Gemini API keys are currently over quota — try again later or add another key.'
+  return '⚠️ All configured Groq API keys are currently over quota — try again later or add another key.'
 }
 
 module.exports = { askAI }
